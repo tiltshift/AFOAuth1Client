@@ -179,6 +179,14 @@ static NSDictionary * AFKeychainQueryDictionaryWithIdentifier(NSString *identifi
 
     self.oauthAccessMethod = @"GET";
 
+    self.onServiceProviderRequest = ^(NSURLRequest *request) {
+#if __IPHONE_OS_VERSION_MIN_REQUIRED
+        [[UIApplication sharedApplication] openURL:request.URL];
+#else
+        [[NSWorkspace sharedWorkspace] openURL:request.URL];
+#endif
+    };
+
     return self;
 }
 
@@ -281,8 +289,9 @@ static NSDictionary * AFKeychainQueryDictionaryWithIdentifier(NSString *identifi
         __block AFOAuth1Token *currentRequestToken = requestToken;
 
         self.applicationLaunchNotificationObserver = [[NSNotificationCenter defaultCenter] addObserverForName:kAFApplicationLaunchedWithURLNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification *notification) {
+            if (self.onServiceProviderRequestFinished)
+                self.onServiceProviderRequestFinished();
             NSURL *url = [[notification userInfo] valueForKey:kAFApplicationLaunchOptionsURLKey];
-
             currentRequestToken.verifier = [AFParametersFromQueryString([url query]) valueForKey:@"oauth_verifier"];
 
             [self acquireOAuthAccessTokenWithPath:accessTokenPath requestToken:currentRequestToken accessMethod:accessMethod success:^(AFOAuth1Token * accessToken, id responseObject) {
@@ -310,11 +319,7 @@ static NSDictionary * AFKeychainQueryDictionaryWithIdentifier(NSString *identifi
         parameters[@"oauth_token"] = requestToken.key;
         NSMutableURLRequest *request = [super requestWithMethod:@"GET" path:userAuthorizationPath parameters:parameters];
         [request setHTTPShouldHandleCookies:NO];
-#if __IPHONE_OS_VERSION_MIN_REQUIRED
-        [[UIApplication sharedApplication] openURL:[request URL]];
-#else
-        [[NSWorkspace sharedWorkspace] openURL:[request URL]];
-#endif
+        self.onServiceProviderRequest(request);
     } failure:^(NSError *error) {
         if (failure) {
             failure(error);
@@ -362,7 +367,16 @@ static NSDictionary * AFKeychainQueryDictionaryWithIdentifier(NSString *identifi
 
     NSMutableDictionary *parameters = [[self OAuthParameters] mutableCopy];
     parameters[@"oauth_token"] = requestToken.key;
-    parameters[@"oauth_verifier"] = requestToken.verifier;
+
+    if (requestToken.session) {
+        // Access token is renewal with existing access token
+        // Unfortunatly `requestToken.canBeRenewed` doesn't work for me here.
+        // c.f. http://wiki.oauth.net/w/page/12238549/ScalableOAuth#AccessTokenRenewal
+        parameters[@"oauth_session_handle"] = requestToken.session;
+    } else if (requestToken.verifier) {
+        // Access token request with existing request token
+        parameters[@"oauth_verifier"] = requestToken.verifier;
+    }
 
     NSMutableURLRequest *request = [self requestWithMethod:accessMethod path:path parameters:parameters];
 
